@@ -4,3 +4,5 @@ Define waypoints and timestamps and get a smooth trajectory by minimizing veloci
 Refer to `example.py` for a demonstration.
 
 Description of the method used can be found at: https://vnav.mit.edu/material/10-TrajectoryOptimization2-notes.pdf
+
+![Example trajecotry in 2D](figure.png)
