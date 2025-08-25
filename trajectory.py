@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import sympy
 from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
+from scipy.optimize import minimize, LinearConstraint
 
 
 class Solver:
@@ -17,12 +18,166 @@ class Solver:
         self.q = q
         # dimensions (2 or 3)
         self.dimensions = dimensions
-
         self.waypoints = None
         self.timestamps = None
         self.result = None
+        self.obj = None
+
+    def solve(self):
+        return None
+
+    def show_path(self):
+        if self.dimensions == 2:
+            self.show_path_2d()
+        if self.dimensions == 3:
+            self.show_path_3d()
+
+    def show_path_2d(self):
+        coeffs = self.result
+        _, ax = plt.subplots()
+        ax.plot(self.waypoints.T[0], self.waypoints.T[1], color="lime")
+        ax.scatter(self.waypoints.T[0], self.waypoints.T[1], color="red")
+        for p, label in zip(self.waypoints, self.timestamps):
+            plt.text(
+                p[0], p[1], str(round(label, 2)), fontsize=9, ha="right", va="bottom"
+            )
+        x = []
+        y = []
+        v = []
+        for i in range(coeffs.shape[1]):
+            px = np.poly1d(coeffs[0, i][::-1])
+            py = np.poly1d(coeffs[1, i][::-1])
+            dpx = np.poly1d((coeffs[0, i] * np.arange(self.d + 1))[1:][::-1])
+            dpy = np.poly1d((coeffs[1, i] * np.arange(self.d + 1))[1:][::-1])
+            t = np.linspace(0, self.timestamps[i + 1] - self.timestamps[i], 100)
+            x.append(px(t))
+            y.append(py(t))
+            dx = dpx(t)
+            dy = dpy(t)
+            v.append(np.sqrt((dx**2 + dy**2))[:-1])
+
+        x = np.hstack(x)
+        y = np.hstack(y)
+        v = np.hstack(v)
+        points = np.array([x, y]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        lc = LineCollection(segments, cmap="plasma", array=v / np.max(v), linewidth=2)
+        ax.add_collection(lc)
+        plt.colorbar(lc, ax=ax, label="velocity")
+        plt.axis("equal")
+        plt.show()
+
+    def show_path_3d(self):
+        coeffs = self.result
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection="3d")
+        ax.plot(
+            self.waypoints.T[0], self.waypoints.T[1], self.waypoints.T[2], color="lime"
+        )
+        ax.scatter(
+            self.waypoints.T[0], self.waypoints.T[1], self.waypoints.T[2], color="red"
+        )
+        for p, label in zip(self.waypoints, self.timestamps):
+            ax.text(
+                p[0],
+                p[1],
+                p[2],
+                str(round(label, 2)),
+                fontsize=9,
+                ha="right",
+                va="bottom",
+            )
+        x = []
+        y = []
+        z = []
+        v = []
+        for i in range(coeffs.shape[1]):
+            px = np.poly1d(coeffs[0, i][::-1])
+            py = np.poly1d(coeffs[1, i][::-1])
+            pz = np.poly1d(coeffs[2, i][::-1])
+            dpx = np.poly1d((coeffs[0, i] * np.arange(self.d + 1))[1:][::-1])
+            dpy = np.poly1d((coeffs[1, i] * np.arange(self.d + 1))[1:][::-1])
+            dpz = np.poly1d((coeffs[2, i] * np.arange(self.d + 1))[1:][::-1])
+            t = np.linspace(0, self.timestamps[i + 1] - self.timestamps[i], 100)
+            x.append(px(t))
+            y.append(py(t))
+            z.append(pz(t))
+            dx = dpx(t)
+            dy = dpy(t)
+            dz = dpz(t)
+            v.append(np.sqrt((dx**2 + dy**2 + dz**2))[:-1])
+
+        x = np.hstack(x)
+        y = np.hstack(y)
+        z = np.hstack(z)
+        v = np.hstack(v)
+        points = np.array([x, y, z]).T.reshape(-1, 1, 3)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        lc = Line3DCollection(segments, cmap="plasma", array=v / np.max(v), linewidth=2)
+        ax.add_collection(lc)
+        plt.colorbar(lc, ax=ax, label="velocity")
+        plt.axis("equal")
+        plt.show()
+
+
+class NoTimestampSolver(Solver):
+    def __init__(self, d, r, q, dimensions):
+        super().__init__(d, r, q, dimensions)
+        self.timestamp_solver = TimestampSolver(d, r, q, dimensions)
+
+    def solve(self, waypoints, T):
+        self.waypoints = np.array(waypoints)
+        n = self.waypoints.shape[0]
+        timestamps0 = np.arange(1, n - 1) / (n - 1) * T
+        print(timestamps0)
+        lc = self.linear_constraint(T)
+        f = lambda tstamps: self.timestamp_solver.solve(
+            self.waypoints, np.hstack((np.array([0]), tstamps, np.array([T])))
+        )
+        res = minimize(
+            f,
+            timestamps0,
+            method="trust-constr",
+            constraints=[lc],
+            options={"maxiter": 50},
+        )
+        self.timestamps = np.hstack((np.array([0]), res.x, np.array([T])))
+        self.result = self.timestamp_solver.result
+        self.obj = self.timestamp_solver.obj
+        return self.obj
+
+    def linear_constraint(self, T):
+        n = self.waypoints.shape[0] - 2
+        A = np.eye(n)
+        A = np.vstack((A, np.zeros(n)))
+        A[-1, -1] = 1
+        for i in range(1, n):
+            A[i, i - 1] = -1
+        lb = np.zeros(n + 1)
+        ub = np.full(n + 1, np.inf)
+        ub[-1] = T
+        linear_constraint = LinearConstraint(A, lb, ub)
+        return linear_constraint
+
+    def ineq_cons(self, T):
+        cons_list = []
+        cons_list.append({"type": "ineq", "fun": lambda x: x[0]})
+        for i in range(self.waypoints.shape[0] - 3):
+            cons_list.append({"type": "ineq", "fun": lambda x: x[i + 1] - x[i] - 0.1})
+        cons_list.append({"type": "ineq", "fun": lambda x: T - x[-1]})
+        return cons_list
+
+
+1
+
+
+class TimestampSolver(Solver):
+    def __init__(self, d, r, q, dimensions):
+        super().__init__(d, r, q, dimensions)
 
     def solve(self, waypoints, timestamps):
+        self.obj = 0
+        print(timestamps)
         waypoints = np.array(waypoints)
         self.waypoints = waypoints
         timestamps = np.array(timestamps)
@@ -89,7 +244,8 @@ class Solver:
             res_dim = np.array(sol["x"]).reshape((n_segments, self.d + 1))
             result[d, :, :] = res_dim
             self.result = result
-        return result
+            self.obj += sol["primal objective"]
+        return self.obj
 
     def quad_matrix(self, T):
         Q = np.zeros((self.d + 1, self.d + 1))
@@ -110,86 +266,3 @@ class Solver:
             for j in range(i, self.d + 1):
                 A[i, j] = np.prod(np.arange(j - i + 1, j + 1)) * t ** (j - i)
         return A
-
-    def show_path(self):
-        if self.dimensions == 2:
-            self.show_path_2d()
-        if self.dimensions == 3:
-            self.show_path_3d()
-
-    def show_path_2d(self):
-        coeffs = self.result
-        _, ax = plt.subplots()
-        ax.plot(self.waypoints.T[0], self.waypoints.T[1], color="lime")
-        ax.scatter(self.waypoints.T[0], self.waypoints.T[1], color="red")
-        for p, label in zip(self.waypoints, self.timestamps):
-            plt.text(p[0], p[1], str(label), fontsize=9, ha="right", va="bottom")
-        x = []
-        y = []
-        v = []
-        for i in range(coeffs.shape[1]):
-            px = np.poly1d(coeffs[0, i][::-1])
-            py = np.poly1d(coeffs[1, i][::-1])
-            dpx = np.poly1d((coeffs[0, i] * np.arange(self.d + 1))[1:][::-1])
-            dpy = np.poly1d((coeffs[1, i] * np.arange(self.d + 1))[1:][::-1])
-            t = np.linspace(0, self.timestamps[i + 1] - self.timestamps[i], 100)
-            x.append(px(t))
-            y.append(py(t))
-            dx = dpx(t)
-            dy = dpy(t)
-            v.append(np.sqrt((dx**2 + dy**2))[:-1])
-
-        x = np.hstack(x)
-        y = np.hstack(y)
-        v = np.hstack(v)
-        points = np.array([x, y]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        lc = LineCollection(segments, cmap="plasma", array=v / np.max(v), linewidth=2)
-        ax.add_collection(lc)
-        plt.colorbar(lc, ax=ax, label="velocity")
-        plt.axis("equal")
-        plt.show()
-
-    def show_path_3d(self):
-        coeffs = self.result
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection="3d")
-        ax.plot(
-            self.waypoints.T[0], self.waypoints.T[1], self.waypoints.T[2], color="lime"
-        )
-        ax.scatter(
-            self.waypoints.T[0], self.waypoints.T[1], self.waypoints.T[2], color="red"
-        )
-        for p, label in zip(self.waypoints, self.timestamps):
-            ax.text(p[0], p[1], p[2], str(label), fontsize=9, ha="right", va="bottom")
-        x = []
-        y = []
-        z = []
-        v = []
-        for i in range(coeffs.shape[1]):
-            px = np.poly1d(coeffs[0, i][::-1])
-            py = np.poly1d(coeffs[1, i][::-1])
-            pz = np.poly1d(coeffs[2, i][::-1])
-            dpx = np.poly1d((coeffs[0, i] * np.arange(self.d + 1))[1:][::-1])
-            dpy = np.poly1d((coeffs[1, i] * np.arange(self.d + 1))[1:][::-1])
-            dpz = np.poly1d((coeffs[2, i] * np.arange(self.d + 1))[1:][::-1])
-            t = np.linspace(0, self.timestamps[i + 1] - self.timestamps[i], 100)
-            x.append(px(t))
-            y.append(py(t))
-            z.append(pz(t))
-            dx = dpx(t)
-            dy = dpy(t)
-            dz = dpz(t)
-            v.append(np.sqrt((dx**2 + dy**2 + dz**2))[:-1])
-
-        x = np.hstack(x)
-        y = np.hstack(y)
-        z = np.hstack(z)
-        v = np.hstack(v)
-        points = np.array([x, y, z]).T.reshape(-1, 1, 3)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        lc = Line3DCollection(segments, cmap="plasma", array=v / np.max(v), linewidth=2)
-        ax.add_collection(lc)
-        plt.colorbar(lc, ax=ax, label="velocity")
-        plt.axis("equal")
-        plt.show()
